@@ -22,7 +22,8 @@ exports.Connect = (req, res) => {
         status: 1,
         message: `${name} profile created successfully.`,
         userId: insertedUserId,
-        username: insertedUserName
+        username: insertedUserName,
+        profile: selectedAvatar
       })
     }
   )

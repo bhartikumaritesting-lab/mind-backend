@@ -252,59 +252,26 @@ io.on('connection', socket => {
   })
 
   socket.on('disconnect', () => {
-    const getUserQuery = 'SELECT id, socket_id FROM users WHERE socket_id = ?'
-    db.query(getUserQuery, [socket.id], (err, users) => {
-      if (err || users.length === 0) return
+    db.query(
+      'SELECT id FROM users WHERE socket_id = ?',
+      [socket.id],
+      (err, users) => {
+        if (err || users.length === 0) return
 
-      const userId = users[0].id
+        const userId = users[0].id
 
-      db.query('UPDATE users SET socket_id = NULL WHERE id = ?', [userId])
+        db.query('DELETE FROM users WHERE id = ?', [userId])
 
-      const getRoomsQuery = `
-      SELECT room_id, current_turn_user
-      FROM room_players rp
-      JOIN rooms r ON r.room_id = rp.room_id
-      WHERE rp.user_id = ?
-    `
-
-      db.query(getRoomsQuery, [userId], (err, rooms) => {
-        if (err) return
-
-        rooms.forEach(r => {
-          const roomId = r.room_id
-          const isDrawer = r.current_turn_user === userId
-
-          db.query(
-            'DELETE FROM room_players WHERE room_id = ? AND user_id = ?',
-            [roomId, userId]
-          )
-
-          db.query(
-            'SELECT user_id FROM room_players WHERE room_id = ? ORDER BY id ASC',
-            [roomId],
-            (err, players) => {
-              if (err || players.length === 0) {
-                db.query('DELETE FROM rooms WHERE room_id = ?', [roomId])
-                return
-              }
-
-              if (isDrawer) {
-                const nextDrawer = players[0].user_id
-                db.query(
-                  'UPDATE rooms SET current_turn_user = ? WHERE room_id = ?',
-                  [nextDrawer, roomId],
-                  () => {
-                    io.to(roomId).emit('next-round', { drawerId: nextDrawer })
-                  }
-                )
-              }
-            }
-          )
-        })
+        db.query(`
+        DELETE FROM rooms 
+        WHERE room_id NOT IN (
+          SELECT DISTINCT room_id FROM room_players
+        )
+      `)
 
         io.emit('refresh-players')
-      })
-    })
+      }
+    )
   })
 
   socket.on('join-room', roomId => {
@@ -360,7 +327,7 @@ io.on('connection', socket => {
     )
   })
 
-  socket.on('guess', ({ roomId, userId, guess, username }) => {
+  socket.on('guess', ({ roomId, userId, guess, username, userprofile }) => {
     db.query(
       `SELECT current_word, round_end_time FROM rooms WHERE room_id=?`,
       [roomId],
@@ -394,7 +361,7 @@ io.on('connection', socket => {
               if (roundTimers[roomId]) clearTimeout(roundTimers[roomId])
               endRound(roomId)
             } else {
-              io.to(roomId).emit('new-guess', { username, guess, is_correct })
+              io.to(roomId).emit('new-guess', { username, guess, is_correct, profile: userprofile })
             }
           }
         )
