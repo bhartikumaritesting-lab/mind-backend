@@ -69,14 +69,14 @@ exports.GetingPlayers = (req, res) => {
     country = country.value
   }
 
-  // Exclude self, get newest 1 other online user in country
+  // 🎮 Get 2 other online users (so total 3 = PLAYERS env)
   const SelectQuery = `
     SELECT * 
     FROM users 
     WHERE country = ? 
       AND status = 'online' 
       AND id != ?
-    ORDER BY id DESC LIMIT 1
+    ORDER BY id DESC LIMIT 2
   `
 
   db.query(SelectQuery, [country, userId], (error, result) => {
@@ -85,101 +85,142 @@ exports.GetingPlayers = (req, res) => {
       return res.status(200).json({ status: 2, message: 'Database Error.' })
     }
 
-    if (result.length > 0) {
-      const ids = result.map(p => p.id)
+    // ✅ If 2 other players found (total 3)
+    if (result.length === 2) {
+      const allPlayerIds = [userId, ...result.map(p => p.id)]
+      console.log(`🎮 3 Players Found! IDs: ${allPlayerIds.join(', ')}`)
+      
       return res.status(200).json({
         status: 3,
-        message: 'Opponent found',
+        message: '3 Players found! Game starting...',
         data: result,
-        playerIds: ids,
-        player: userId
+        playerIds: allPlayerIds,
+        player: userId,
+        totalPlayers: 3
       })
     }
 
+    // ⏳ If only 1 player found (total 2)
+    if (result.length === 1) {
+      return res.status(200).json({
+        status: 2,
+        message: 'Only 1 opponent found. Waiting for 1 more...',
+        data: result,
+        foundPlayers: 1,
+        neededPlayers: 1
+      })
+    }
+
+    // 🔍 No players found yet
     return res.status(200).json({
       status: 1,
+      message: 'Searching for opponents...',
       data: []
     })
   })
 }
 
-exports.JoinRoom = (req, res) => {
-  const { playerIds } = req.body
+exports.JoinRoom = io => {
+  return (req, res) => {
+    const { playerIds } = req.body
 
-  if (!Array.isArray(playerIds) || playerIds.length === 0) {
-    return res.status(200).json({ status: 0, message: 'No players received' })
-  }
-
-  const sortedIds = [...new Set(playerIds)].sort((a, b) => a - b)
-  const roomKey = sortedIds.join('_')
-  const createdAt = new Date()
-
-  // STEP 0: any user already in room?
-  const checkExisting = `
-    SELECT user_id FROM room_players WHERE user_id IN (?)
-  `
-
-  db.query(checkExisting, [sortedIds], (err, exist) => {
-    if (err) return res.json({ status: 2, message: 'DB error' })
-
-    if (exist.length > 0) {
-      return res.json({
-        status: 4,
-        message: 'User already in room',
-        users: exist
-      })
+    if (!Array.isArray(playerIds) || playerIds.length === 0) {
+      return res.status(200).json({ status: 0, message: 'No players received' })
     }
 
-    // STEP 1: Create OR fetch room (🔥 main fix)
-    const roomQuery = `
-      INSERT INTO rooms (room_key, max_players, created_at, game_status)
-      VALUES (?, ?, ?, 'waiting')
-      ON DUPLICATE KEY UPDATE room_id = LAST_INSERT_ID(room_id)
+    const sortedIds = [...new Set(playerIds)].sort((a, b) => a - b)
+    const roomKey = sortedIds.join('_')
+    const createdAt = new Date()
+
+    // STEP 0: any user already in room?
+    const checkExisting = `
+      SELECT user_id FROM room_players WHERE user_id IN (?)
     `
 
-    db.query(
-      roomQuery,
-      [roomKey, sortedIds.length, createdAt],
-      (roomErr, roomRes) => {
-        if (roomErr) {
-          console.error('❌ Room error:', roomErr)
-          return res.json({ status: 2, message: 'Room error' })
-        }
+    db.query(checkExisting, [sortedIds], (err, exist) => {
+      if (err) return res.json({ status: 2, message: 'DB error' })
 
-        const roomId = roomRes.insertId // 👈 works for both new & existing
-
-        // STEP 2: insert players (unique(user_id) handles safety)
-        const rpValues = sortedIds.map(uid => [roomId, uid, 0, 0, createdAt])
-
-        const rpQuery = `
-          INSERT IGNORE INTO room_players
-          (room_id, user_id, score, is_drawer, joined_at)
-          VALUES ?
-        `
-
-        db.query(rpQuery, [rpValues], rpErr => {
-          if (rpErr) {
-            console.error('❌ room_players error:', rpErr)
-            return res.json({ status: 2, message: 'Player insert failed' })
-          }
-
-          // STEP 3: update user status
-          const placeholders = sortedIds.map(() => '?').join(',')
-          db.query(
-            `UPDATE users SET status='rooms' WHERE id IN (${placeholders})`,
-            sortedIds
-          )
-
-          return res.json({
-            status: 1,
-            message: 'Room joined successfully',
-            room_id: roomId,
-            players: sortedIds
-          })
+      if (exist.length > 0) {
+        return res.json({
+          status: 4,
+          message: 'User already in room',
+          users: exist
         })
       }
-    )
-  })
+
+      // STEP 1: Create OR fetch room
+      const roomQuery = `
+        INSERT INTO rooms (room_key, max_players, created_at, game_status)
+        VALUES (?, ?, ?, 'waiting')
+        ON DUPLICATE KEY UPDATE room_id = LAST_INSERT_ID(room_id)
+      `
+
+      db.query(
+        roomQuery,
+        [roomKey, sortedIds.length, createdAt],
+        (roomErr, roomRes) => {
+          if (roomErr) {
+            console.error('❌ Room error:', roomErr)
+            return res.json({ status: 2, message: 'Room error' })
+          }
+
+          const roomId = roomRes.insertId
+
+          // STEP 2: insert players (unique(user_id) handles safety)
+          const rpValues = sortedIds.map(uid => [roomId, uid, 0, 0, createdAt])
+
+          const rpQuery = `
+            INSERT IGNORE INTO room_players
+            (room_id, user_id, score, is_drawer, joined_at)
+            VALUES ?
+          `
+
+          db.query(rpQuery, [rpValues], rpErr => {
+            if (rpErr) {
+              console.error('❌ room_players error:', rpErr)
+              return res.json({ status: 2, message: 'Player insert failed' })
+            }
+
+            // STEP 3: update user status
+            const placeholders = sortedIds.map(() => '?').join(',')
+            db.query(
+              `UPDATE users SET status='rooms' WHERE id IN (${placeholders})`,
+              sortedIds
+            )
+
+            // ✅ STEP 4: Get all socket IDs and broadcast ready-to-start to ALL players
+            db.query(
+              `SELECT id, socket_id FROM users WHERE id IN (${placeholders})`,
+              sortedIds,
+              (err, users) => {
+                if (!err && users.length > 0) {
+                  console.log(`🎮 Broadcasting ready-to-start to room ${roomId}:`)
+                  users.forEach(user => {
+                    if (user.socket_id) {
+                      console.log(`   → User ${user.id} (socket: ${user.socket_id})`)
+                      // Emit directly to each user's socket
+                      io.to(user.socket_id).emit('ready-to-start', {
+                        roomId,
+                        message: '🎮 Game room ready! Redirecting...',
+                        totalPlayers: sortedIds.length
+                      })
+                    }
+                  })
+                }
+              }
+            )
+
+            return res.json({
+              status: 1,
+              message: 'Room joined successfully',
+              room_id: roomId,
+              players: sortedIds
+            })
+          })
+        }
+      )
+    })
+  }
 }
 
 exports.GetUserStatus = (req, res) => {

@@ -1,4 +1,5 @@
 const db = require('../config/db')
+const constants = require('../config/constants')
 
 exports.GetPlayerRoom = (req, res) => {
   const { roomId } = req.body
@@ -20,7 +21,7 @@ exports.GetPlayerRoom = (req, res) => {
       return res.status(404).json({ status: 0, message: 'Room not found' })
 
     db.query(playersQuery, [roomId], (pErr, players) => {
-      if (pErr) players = [] // agar error aaye toh empty array
+      if (pErr) players = []
 
       return res.status(200).json({
         status: 1,
@@ -44,11 +45,11 @@ exports.StartGame = io => (req, res) => {
 
     setTimeout(() => {
       db.query(
-        "UPDATE rooms SET game_status='playing', current_turn_user=?, total_rounds=3, current_round=1 WHERE room_id=?",
-        [drawerId, roomId]
+        "UPDATE rooms SET game_status='playing', current_turn_user=?, total_rounds=?, current_round=1 WHERE room_id=?",
+        [drawerId, constants.GAME.TOTAL_ROUNDS, roomId]
       )
       io.to(roomId).emit('game-start', { drawerId })
-    }, 10000)
+    }, constants.GAME.PRE_GAME_COUNTDOWN * 1000)
 
     res.json({ status: 1 })
   })
@@ -75,7 +76,8 @@ exports.GetRoomState = (req, res) => {
           word: null,
           message: 'Waiting for word selection',
           current_round: room.current_round,
-          total_rounds: room.total_rounds
+          total_rounds: room.total_rounds,
+          game_status: room.game_status
         })
       }
 
@@ -85,7 +87,8 @@ exports.GetRoomState = (req, res) => {
           role: 'drawer',
           word: room.current_word,
           current_round: room.current_round,
-          total_rounds: room.total_rounds
+          total_rounds: room.total_rounds,
+          game_status: room.game_status
         })
       }
 
@@ -94,7 +97,8 @@ exports.GetRoomState = (req, res) => {
         role: 'guesser',
         word: '_ '.repeat(room.current_word.length),
         current_round: room.current_round,
-        total_rounds: room.total_rounds
+        total_rounds: room.total_rounds,
+        game_status: room.game_status
       })
     }
   )
